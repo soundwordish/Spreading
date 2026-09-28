@@ -9,7 +9,6 @@ EXCLUSION_LIST = set([
     "soul", "divine", "holy", "prayer", "sin"
 ])
 
-# Your priority words
 PRIORITY_WORDS = set([
     "arbutus", "gentian", "anemone", "aster", "daffodil", "tulip", 
     "orchid", "crocus", "violet", "amaranth", "hemlock", "clover",
@@ -27,20 +26,42 @@ def clean_and_tokenize(filepath):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             text = f.read().lower()
-            words = re.findall(r'\b[a-z]+\b', text)
+            # Updated regex: \b[a-z_]+\b allows underscores to remain part of the word
+            words = re.findall(r'\b[a-z_]+\b', text)
             return [w for w in words if w not in EXCLUSION_LIST and len(w) > 2]
     except FileNotFoundError:
+        print(f"Error: Could not find {filepath}")
         return []
 
 def get_phonemes(word):
-    phones = pronouncing.phones_for_word(word)
-    return phones[0] if phones else ""
+    # Handle multi-word plants by evaluating their parts separately and joining the phonemes
+    parts = word.split('_')
+    phones = []
+    for part in parts:
+        p = pronouncing.phones_for_word(part)
+        if p:
+            phones.append(p[0])
+    return " ".join(phones) if phones else ""
 
 def build_lexicon():
-    print("Loading texts...")
-    # dickinson = clean_and_tokenize("dickinson.txt")
-    botany = clean_and_tokenize("botany.txt")
-    master_corpus = botany
+    print("Loading text files...")
+    
+    # Dynamically inject the newly underscored plants into the priority styling list
+    try:
+        with open("underscored_botany_index.txt", "r", encoding="utf-8") as f:
+            botany_index = [line.strip().lower() for line in f if line.strip()]
+            PRIORITY_WORDS.update(botany_index)
+            print(f"Added {len(botany_index)} plants to the Priority Words list.")
+    except FileNotFoundError:
+        print("Warning: underscored_botany_index.txt not found. Priority boost will not be applied to new plants.")
+
+    # Load the properly underscored literature
+    master_corpus = clean_and_tokenize("underscored_literature.txt")
+    
+    if not master_corpus:
+        print("Corpus is empty. Check your file paths.")
+        return
+        
     unique_words = list(set(master_corpus))
     
     sequential_map = defaultdict(list)
@@ -56,7 +77,6 @@ def build_lexicon():
     
     print("Calculating connections...")
     for i, word in enumerate(unique_words):
-        # Progress tracker so you know it isn't frozen!
         if i % 500 == 0:
             print(f"Processed {i} out of {total_words} words...")
 
@@ -70,11 +90,10 @@ def build_lexicon():
             sem_ghosts = []
             for w, c in counts.items():
                 weight = round(c / total_followers, 3)
-                if w in PRIORITY_WORDS: weight += 2.0 # Force to top of sort
+                if w in PRIORITY_WORDS: weight += 2.0 
                 sem_ghosts.append({"word": w, "weight": weight, "is_special": w in PRIORITY_WORDS})
             
             sem_ghosts = sorted(sem_ghosts, key=lambda x: x["weight"], reverse=True)[:5]
-            # Cap back to 1.0 for the JSON output
             for g in sem_ghosts: g["weight"] = min(1.0, g["weight"])
             if sem_ghosts: word_data["semantic"] = sem_ghosts
 
@@ -84,7 +103,7 @@ def build_lexicon():
         for match in ortho_matches:
             if match != word:
                 ratio = difflib.SequenceMatcher(None, word, match).ratio()
-                if match in PRIORITY_WORDS: ratio += 2.0 # Force to top of sort
+                if match in PRIORITY_WORDS: ratio += 2.0 
                 ortho_ghosts.append({"word": match, "weight": round(ratio, 3), "is_special": match in PRIORITY_WORDS})
         
         if ortho_ghosts:
@@ -101,7 +120,7 @@ def build_lexicon():
                     cand_phones = word_to_phonemes[candidate]
                     ratio = difflib.SequenceMatcher(None, target_phones, cand_phones).ratio()
                     if ratio > 0.65:
-                        if candidate in PRIORITY_WORDS: ratio += 2.0 # Force to top of sort
+                        if candidate in PRIORITY_WORDS: ratio += 2.0 
                         phone_scores.append({"word": candidate, "weight": round(ratio, 3), "is_special": candidate in PRIORITY_WORDS})
             
             if phone_scores:
@@ -115,7 +134,7 @@ def build_lexicon():
     with open("meadow_lexicon.json", "w", encoding="utf-8") as f:
         json.dump(lexicon, f, indent=2)
         
-    print("Done! New JSON saved.")
+    print("Done! New meadow_lexicon.json saved.")
 
 if __name__ == "__main__":
     build_lexicon()

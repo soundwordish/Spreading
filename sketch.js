@@ -2,18 +2,28 @@ let lexicon;
 let activeWords = []; 
 let grassBlades = [];
 let milkweeds = [];
+let usedAnchors = []; 
+
+// Variables for the text file
+let botanyIndexRaw;
+let validBotanyAnchors = [];
 
 const stopWords = ["from", "upon", "into", "this", "that", "with", "they", "them", "have", "been"];
 
 let soundtrack;
 let audioStarted = false;
-let isClearing = false; 
+
+// NEW: Independent Column State Machine
+let currentTick = 0; 
+let stepTimer; 
+let columnGen = [1, 1, 1]; // Tracks the generation state of each zone (1, 2, 3, 4, or 0 for resting)
 
 // Background Color Variables
 let softDawn, skyBlue, sunrisePeach;
 
 function preload() {
   lexicon = loadJSON('meadow_lexicon.json');
+  botanyIndexRaw = loadStrings('underscored_botany_index.txt'); 
 }
 
 function setup() {
@@ -37,11 +47,21 @@ function setup() {
     milkweeds.push(new MilkweedEntity(random(width), random(height))); 
   }
   
-  let allAvailableWords = Object.keys(lexicon);
-  let startWord = random(allAvailableWords);
-  spawnSeed(startWord, width / 2, height - 100, true); 
+  // PREPARE THE BOTANICAL SEED LIST
+  let allBotanyPhrases = botanyIndexRaw
+    .join('\n')
+    .toLowerCase()
+    .split(/[\n,]+/) 
+    .map(w => w.trim()); 
+    
+  validBotanyAnchors = allBotanyPhrases.filter(w => w.length > 0 && lexicon[w]);
   
-  setInterval(bloomNextWord, 5500); 
+  if (validBotanyAnchors.length === 0) {
+    console.warn("⚠️ No valid matches between botany_index.txt and the JSON! Falling back to full dictionary.");
+    validBotanyAnchors = Object.keys(lexicon);
+  }
+
+  resetMeadow(); 
 }
 
 function getDynamicBackground() {
@@ -57,6 +77,27 @@ function getDynamicBackground() {
   }
 }
 
+function getZoneCenter(zoneIndex) {
+  let zoneWidth = width / 3;
+  return (zoneIndex * zoneWidth) + (zoneWidth / 2);
+}
+
+function resetMeadow() {
+  activeWords = [];
+  usedAnchors = []; 
+  currentTick = 0;
+  columnGen = [1, 1, 1]; // Reset all columns to generation 1
+  
+  console.log("=========================================");
+  console.log("🌱 MEADOW ENGINE STARTED");
+  console.log("=========================================");
+  
+  if (stepTimer) clearInterval(stepTimer);
+  
+  executeNextStep(); 
+  stepTimer = setInterval(executeNextStep, 10000); 
+}
+
 function draw() {
   background(getDynamicBackground()); 
 
@@ -65,22 +106,6 @@ function draw() {
   for (let g of grassBlades) {
     g.update(globalBreeze); 
     g.display(); 
-  }
-
-  if (isClearing) {
-    let allDead = true;
-    for (let w of activeWords) {
-      if (!w.isDead) {
-        allDead = false;
-        break;
-      }
-    }
-    if (allDead) {
-      isClearing = false;
-      activeWords = [];
-      let allAvailableWords = Object.keys(lexicon);
-      spawnSeed(random(allAvailableWords), width / 2, height - 100, true);
-    }
   }
 
   for (let i = activeWords.length - 1; i >= 0; i--) {
@@ -109,26 +134,90 @@ function mousePressed() {
     soundtrack.loop(); 
     audioStarted = true; 
   } else {
-    isClearing = false; 
-    activeWords = []; 
-    let allAvailableWords = Object.keys(lexicon);
-    let startWord = random(allAvailableWords);
-    spawnSeed(startWord, mouseX, height - 100, true); 
+    resetMeadow(); 
   }
 }
 
 // --------------------------------------------------------
-// VINE ENGINE
+// DECOUPLED COLUMN LADDER ENGINE
 // --------------------------------------------------------
 
-function spawnSeed(wordText, x, y, isSpecial = false) {
-  let anchor = new WordNode(wordText, x, y, "anchor", 1.0, isSpecial);
-  activeWords.push(anchor); 
-  
-  spawnGhosts(wordText, x, y);
+function executeNextStep() {
+  let zoneIndex = currentTick % 3; 
+  let gen = columnGen[zoneIndex]; 
+  const ghostProgression = [6, 5, 4, 3]; 
+
+  console.log(`\n--- TICK ${currentTick + 1} (Zone ${zoneIndex}, Gen State ${gen}) ---`);
+
+  if (gen > 4) {
+    // End of natural cycle. Clear it, and let it rest for one turn.
+    console.log(`🌸 Zone ${zoneIndex} complete. Fading out...`);
+    clearZone(zoneIndex);
+    columnGen[zoneIndex] = 0; 
+  } 
+  else if (gen === 1 || gen === 0) {
+    // GENERATION 1 (Or waking up from a rest phase)
+    let fallback = random(validBotanyAnchors);
+    let attempts = 0;
+    while(usedAnchors.includes(fallback) && attempts < 50) {
+      fallback = random(validBotanyAnchors);
+      attempts++;
+    }
+    
+    let startX = getZoneCenter(zoneIndex);
+    let startY = height - 100; 
+    
+    spawnSeed(fallback, startX, startY, true, zoneIndex, ghostProgression[0]); 
+    columnGen[zoneIndex] = 2; // Next step will be Gen 2
+  } 
+  else {
+    // GENERATION 2, 3, or 4
+    let numGhosts = ghostProgression[gen - 1];
+    
+    let validGhosts = activeWords.filter(w => 
+      w.type !== "anchor" && 
+      !w.isDead && 
+      !w.isDriftingEdge && 
+      !w.fadingOut &&
+      !usedAnchors.includes(w.text) &&
+      w.zoneIndex === zoneIndex
+    );
+    
+    let selectedGhosts = shuffle(validGhosts).sort((a, b) => a.weight - b.weight).slice(0, 1);
+    
+    if (selectedGhosts.length === 0) {
+      console.warn(`⚠️ Dead end in Zone ${zoneIndex}. Clearing early.`);
+      clearZone(zoneIndex);
+      columnGen[zoneIndex] = 0; // Force into a resting phase
+    } else {
+      let chosenGhost = selectedGhosts[0];
+      chosenGhost.transformToAnchor(numGhosts);
+      columnGen[zoneIndex]++; // Advance to next generation
+    }
+  }
+
+  currentTick++;
 }
 
-function spawnGhosts(wordText, x, y) {
+// Helper function to trigger fading in a specific column
+function clearZone(zoneIndex) {
+  for (let w of activeWords) {
+    if (w.zoneIndex === zoneIndex) {
+      if (w.type === "anchor") w.fadingOut = true;
+      else w.startEdgeDrift();
+    }
+  }
+}
+
+function spawnSeed(wordText, x, y, isSpecial, zoneIndex, maxGhosts) {
+  usedAnchors.push(wordText); 
+  let anchor = new WordNode(wordText, x, y, "anchor", 1.0, isSpecial, zoneIndex);
+  activeWords.push(anchor); 
+  
+  spawnGhosts(wordText, x, y, zoneIndex, maxGhosts);
+}
+
+function spawnGhosts(wordText, x, y, zoneIndex, maxGhosts) {
   let data = lexicon[wordText]; 
   if (!data) return; 
 
@@ -137,7 +226,10 @@ function spawnGhosts(wordText, x, y) {
   seenWords.add(wordText); 
 
   const addGhost = (item, type) => {
-    if (!seenWords.has(item.word)) {
+    let alreadyBloomed = usedAnchors.includes(item.word);
+    let alreadyFloating = activeWords.some(w => w.text === item.word && !w.isDead && !w.fadingOut);
+    
+    if (!seenWords.has(item.word) && !alreadyBloomed && !alreadyFloating) {
       seenWords.add(item.word);
       allGhosts.push({...item, type: type});
     }
@@ -147,67 +239,24 @@ function spawnGhosts(wordText, x, y) {
   if (data.orthographic) data.orthographic.forEach(item => addGhost(item, "orthographic")); 
   if (data.phonetic) data.phonetic.forEach(item => addGhost(item, "phonetic")); 
 
-  allGhosts = shuffle(allGhosts).slice(0, 4); 
+  allGhosts = shuffle(allGhosts).slice(0, maxGhosts); 
 
   for (let i = 0; i < allGhosts.length; i++) {
     let ghostNode = new WordNode(
       allGhosts[i].word, 
-      x + random(-10, 10), 
-      y + random(-10, 10), 
+      x, 
+      y, 
       allGhosts[i].type, 
       allGhosts[i].weight,
-      allGhosts[i].is_special
+      allGhosts[i].is_special,
+      zoneIndex 
     );
     
-    let burstAngle = random(TWO_PI);
-    ghostNode.vel.x = cos(burstAngle) * random(0.5, 1.5);
-    ghostNode.vel.y = sin(burstAngle) * random(0.5, 1.5);
+    let burstAngle = random(PI, TWO_PI); 
+    ghostNode.vel.x = cos(burstAngle) * random(1.0, 2.5);
+    ghostNode.vel.y = sin(burstAngle) * random(1.5, 3.0); 
     
     activeWords.push(ghostNode); 
-  }
-}
-
-function bloomNextWord() {
-  if (isClearing) return; 
-
-  let anchors = activeWords.filter(w => w.type === "anchor");
-  let lastAnchor = anchors[anchors.length - 1];
-  
-  if (anchors.length >= 30) {
-    isClearing = true;
-    for (let w of activeWords) {
-      if (w.type === "anchor") {
-        w.fadingOut = true; 
-      } else {
-        w.startEdgeDrift(); 
-      }
-    }
-    return;
-  }
-  
-  if (lastAnchor) {
-    let allAvailableWords = Object.keys(lexicon);
-    let nextText = random(allAvailableWords); 
-    
-    let direction = random([-1, 1]); 
-    let nextX = lastAnchor.targetY ? lastAnchor.pos.x + random(80, 160) * direction : lastAnchor.pos.x;
-    let nextY = lastAnchor.targetY - random(70, 120); 
-    
-    if (nextX < 100 || nextX > width - 100) {
-      nextX = lastAnchor.pos.x + random(80, 160) * (direction * -1);
-    }
-    nextX = constrain(nextX, 100, width - 100);
-
-    if (nextY < 100) {
-      nextY = height - 100;
-      nextX = random(200, width - 200);
-    }
-
-    spawnSeed(nextText, nextX, nextY, true);
-    
-  } else {
-    let allAvailableWords = Object.keys(lexicon);
-    spawnSeed(random(allAvailableWords), random(200, width-200), height - 100, true); 
   }
 }
 
@@ -216,17 +265,20 @@ function bloomNextWord() {
 // --------------------------------------------------------
 
 class WordNode {
-  constructor(text, x, y, type, weight, isSpecial) {
+  constructor(text, x, y, type, weight, isSpecial, zoneIndex) {
     this.text = text;
     this.type = type; 
     this.weight = weight; 
     this.isSpecial = isSpecial;
+    this.zoneIndex = zoneIndex; 
     
-    this.targetY = y;
     this.pos = createVector(x, y); 
     
+    this.targetX = x;
+    this.targetY = y;
+    
     if (this.type === "anchor") {
-      this.pos.y = this.targetY + 40; 
+      this.pos.y = this.targetY + 20; 
     }
 
     this.vel = createVector(0, 0); 
@@ -234,12 +286,14 @@ class WordNode {
     this.noiseOffset = random(1000); 
     this.driftSpeed = random(0.005, 0.012); 
     
-    if (this.isSpecial) {
-      this.baseSize = random(42, 54); 
+    if (this.type === "anchor") {
+      this.baseSize = random(55, 75); 
+    } else if (this.isSpecial) {
+      this.baseSize = random(30, 38); 
     } else if (this.text.length <= 4 || stopWords.includes(this.text)) {
       this.baseSize = 16;             
     } else {
-      this.baseSize = random(22, 32); 
+      this.baseSize = random(22, 28); 
     }
     
     this.baseAlpha = 0; 
@@ -250,8 +304,58 @@ class WordNode {
     this.isDead = false; 
     this.isDriftingEdge = false; 
     
-    this.life = random(600, 1200); 
+    this.maxLife = random(12000, 16000); 
+    this.life = this.maxLife; 
     this.flowerHue = random([320, 340, 10, 45, 280, 300]);
+  }
+
+  transformToAnchor(maxGhosts) {
+    this.type = "anchor";
+    this.vel.set(0, 0);        
+    this.acc.set(0, 0);
+    this.baseSize = random(55, 75); 
+    this.flowerHue = random([320, 340, 10, 45, 280, 300]); 
+    this.targetAlpha = 1.0;
+    
+    let highestYInZone = height;
+    let zoneAnchors = activeWords.filter(w => w.type === "anchor" && w.zoneIndex === this.zoneIndex && w !== this && !w.fadingOut);
+    for (let a of zoneAnchors) {
+      if (a.targetY < highestYInZone) highestYInZone = a.targetY;
+    }
+    
+    if (this.pos.y > highestYInZone - 80) {
+      this.targetY = highestYInZone - random(130, 170);
+    } else {
+      this.targetY = this.pos.y; 
+    }
+    this.targetX = this.pos.x;
+
+    let allAnchors = activeWords.filter(w => w.type === "anchor" && w !== this && !w.fadingOut);
+    let overlap = true;
+    let attempts = 0;
+    
+    while(overlap && attempts < 20) {
+      overlap = false;
+      for (let a of allAnchors) {
+        let d = dist(this.targetX, this.targetY, a.targetX, a.targetY);
+        if (d < 160) { 
+          overlap = true;
+          if (this.targetX < a.targetX) {
+            this.targetX -= 40;
+          } else {
+            this.targetX += 40;
+          }
+          this.targetY -= 20; 
+        }
+      }
+      attempts++;
+    }
+    
+    this.targetX = constrain(this.targetX, 80, width - 80);
+    this.targetY = constrain(this.targetY, 80, height - 80);
+
+    usedAnchors.push(this.text); 
+    spawnGhosts(this.text, this.targetX, this.targetY, this.zoneIndex, maxGhosts); 
   }
 
   startEdgeDrift() {
@@ -293,10 +397,12 @@ class WordNode {
         this.baseAlpha -= 0.03; 
         if (this.baseAlpha <= 0) this.isDead = true;
       } else {
-        this.pos.y = lerp(this.pos.y, this.targetY, 0.03);
+        this.pos.x = lerp(this.pos.x, this.targetX, 0.04);
+        this.pos.y = lerp(this.pos.y, this.targetY, 0.04);
       }
       let pulse = map(sin(millis() * 0.002 + this.noiseOffset), -1, 1, 0.7, 1.0);
       this.currentAlpha = this.baseAlpha * pulse;
+      
     } else {
       if (this.baseAlpha < this.targetAlpha && !this.fadingOut) {
         this.baseAlpha += 0.01; 
@@ -308,7 +414,6 @@ class WordNode {
       
       this.life--;
       if (this.life <= 0) this.fadingOut = true;
-      
       this.currentAlpha = this.baseAlpha;
       
       this.acc.x += globalBreeze; 
@@ -316,12 +421,18 @@ class WordNode {
       let noiseForce = p5.Vector.fromAngle(angle); 
       noiseForce.mult(0.01); 
       this.acc.add(noiseForce); 
+      
+      let targetX = getZoneCenter(this.zoneIndex);
+      let distToCenter = targetX - this.pos.x;
+      this.acc.x += distToCenter * 0.00002; 
+      this.acc.y -= 0.002;                  
+      
       this.noiseOffset += this.driftSpeed; 
 
       this.vel.add(this.acc); 
-      this.vel.limit(0.8); 
+      this.vel.limit(1.2);  
       this.pos.add(this.vel); 
-      this.vel.mult(0.97); 
+      this.vel.mult(0.985); 
       this.acc.mult(0); 
     }
   }
@@ -330,7 +441,6 @@ class WordNode {
     if (this.currentAlpha <= 0) return;
     
     let h, s;
-    
     if (this.type === "anchor") {
       h = this.flowerHue;
       s = 85; 
@@ -341,10 +451,18 @@ class WordNode {
     
     push();
     fill(h, s, 100, this.currentAlpha); 
-    
-    textStyle(this.isSpecial || this.type === "anchor" ? BOLD : ITALIC); 
+    textStyle(this.type === "anchor" ? BOLD : ITALIC); 
     textSize(this.baseSize);
-    text(this.text, this.pos.x, this.pos.y); 
+    
+    let formattedText;
+    if (this.text.length > 12) {
+      formattedText = this.text.replace(/_/g, '\n'); 
+    } else {
+      formattedText = this.text.replace(/_/g, ' ');  
+    }
+    
+    text(formattedText, this.pos.x, this.pos.y); 
+    
     pop();
   }
 }
@@ -362,7 +480,6 @@ class GrassBlade {
   update(globalBreeze) {
     let windSway = map(noise(this.noiseOffset), 0, 1, -20, 20); 
     let globalSway = globalBreeze * 1500; 
-    
     this.tipX = this.baseX + windSway + globalSway; 
     this.noiseOffset += 0.005; 
   }
@@ -371,12 +488,7 @@ class GrassBlade {
     stroke(110, 40, 60, 0.6); 
     strokeWeight(2); 
     noFill(); 
-    bezier(
-      this.baseX, this.baseY,  
-      this.baseX, this.baseY - this.bladeHeight / 2,  
-      this.tipX, this.tipY + this.bladeHeight / 4,  
-      this.tipX, this.tipY 
-    );
+    bezier(this.baseX, this.baseY, this.baseX, this.baseY - this.bladeHeight / 2, this.tipX, this.tipY + this.bladeHeight / 4, this.tipX, this.tipY);
   }
 }
 
@@ -428,8 +540,6 @@ class MilkweedEntity {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight); 
-  
-  // FIX: Clear the old grass and replant across the entire new width
   grassBlades = [];
   for (let i = 0; i < width; i += 8) {
     grassBlades.push(new GrassBlade(i)); 
