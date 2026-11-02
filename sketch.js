@@ -36,7 +36,7 @@ function setup() {
   skyBlue = color(193, 60, 100);    
   sunrisePeach = color(17, 41, 100);
   
-  soundtrack = createAudio('morning_birds.mp3'); 
+  soundtrack = createAudio('morning_birds_pippa 3-Audio.mp3'); 
   soundtrack.volume(0.6); 
 
   for (let i = 0; i < width; i += 8) {
